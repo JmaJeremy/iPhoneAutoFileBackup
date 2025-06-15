@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>iPhoneVideoBackup</RootNamespace>
+    <AssemblyName>iPhoneVideoBackup</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MediaDevices" Version="1.10.0" />
+  </ItemGroup>
+
+</Project>
