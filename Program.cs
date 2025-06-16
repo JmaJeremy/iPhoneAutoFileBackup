@@ -15,6 +15,15 @@ namespace iPhoneVideoBackup
         {
             try
             {
+
+                // List all detected devices and their friendly names
+                var devices = MediaDevice.GetDevices();
+                Console.WriteLine($"Devices found: {devices.Count()}");
+                foreach (var mediaDevice in devices)
+                {
+                    Console.WriteLine($"Device: {mediaDevice.FriendlyName}");
+                }
+
                 // Get today's date in "yyyy-MM-dd" format for folder naming
                 var today = DateTime.Today.ToString("yyyy-MM-dd");
                 var destinationRoot = Path.Combine("H:\\", "Steven", "iphone", today);
@@ -30,6 +39,25 @@ namespace iPhoneVideoBackup
                     return; // Exit if no iPhone is found
                 }
 
+                // Connect to the iPhone device BEFORE accessing files
+                try
+                {
+                    device.Connect();
+                    Console.WriteLine("✅ Connected to device.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ Failed to connect: {ex.Message}");
+                    return;
+                }
+
+                if (!device.IsConnected)
+                {
+                    Console.WriteLine("❌ Device is not connected.");
+                    return;
+                }
+
+                // Now it's safe to access files and directories
                 // Path to the DCIM folder where photos and videos are stored
                 var dcimPath = @"\Internal Storage\DCIM";
                 var videoFiles = new List<(string sourcePath, string fileName, long size)>();
@@ -55,9 +83,6 @@ namespace iPhoneVideoBackup
                     Console.WriteLine("⚠️ No supported files found.");
                     return;
                 }
-
-                // Connect to the iPhone device
-                device.Connect();
 
                 // Copy video files to the destination directory
                 CopyFiles(device, videoFiles, destinationRoot);
