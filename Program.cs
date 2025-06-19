@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
+using System.Security.Cryptography;
 using MediaDevices;
 
 namespace iPhoneVideoBackup
@@ -15,6 +16,14 @@ namespace iPhoneVideoBackup
         {
             try
             {
+                // Prompt the user to commence copying files
+                Console.Write("❓ Do you want to commence copying files? (Y/N): ");
+                var startResponse = Console.ReadLine();
+                if (startResponse == null || !startResponse.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("⏹️ Operation cancelled by user.");
+                    return;
+                }
 
                 // List all detected devices and their friendly names
                 var devices = MediaDevice.GetDevices();
@@ -84,7 +93,8 @@ namespace iPhoneVideoBackup
                     return;
                 }
 
-                // Copy video files to the destination directory
+                // Sort videoFiles by fileName before copying
+                videoFiles = videoFiles.OrderBy(f => f.fileName).ToList();
                 CopyFiles(device, videoFiles, destinationRoot);
 
                 // Verify that the copied files match the originals
@@ -110,25 +120,53 @@ namespace iPhoneVideoBackup
             }
         }
 
-        // Method to copy video files from the iPhone to the destination directory
+        // Method to compute SHA256 checksum of a file
+        static string ComputeFileChecksum(string filePath)
+        {
+            using (var sha256 = SHA256.Create())
+            using (var stream = File.OpenRead(filePath))
+            {
+                var hash = sha256.ComputeHash(stream);
+                return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
+        // Method to compute SHA256 checksum of a file on the device
+        static string ComputeDeviceFileChecksum(MediaDevice device, string sourcePath)
+        {
+            using (var sha256 = SHA256.Create())
+            using (var ms = new MemoryStream())
+            {
+                device.DownloadFile(sourcePath, ms);
+                ms.Position = 0;
+                var hash = sha256.ComputeHash(ms);
+                return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
+        // Modified CopyFiles method to skip files with matching name and size
         static void CopyFiles(MediaDevice device, List<(string sourcePath, string fileName, long size)> videoFiles, string destinationRoot)
         {
             foreach (var (sourcePath, fileName, size, index) in videoFiles.Select((file, index) => (file.sourcePath, file.fileName, file.size, index)))
             {
                 var destPath = Path.Combine(destinationRoot, fileName);
-                using (var sourceStream = new MemoryStream())
-                {
-                    // Download the file from the iPhone to a memory stream
-                    device.DownloadFile(sourcePath, sourceStream);
-                    sourceStream.Position = 0; // Reset stream position before copying
 
-                    // Create the destination file and copy the contents from the memory stream
-                    using (var destStream = File.Create(destPath))
+                // If file exists and size matches, skip copying
+                if (File.Exists(destPath))
+                {
+                    var destFileInfo = new FileInfo(destPath);
+                    if (destFileInfo.Length == size)
                     {
-                        sourceStream.CopyTo(destStream);
+                        Console.WriteLine($"Skipped (already copied): {fileName}");
+                        continue;
                     }
                 }
-                // Update the console output to include the number of files copied and percentage
+
+                using (var destStream = File.Create(destPath))
+                {
+                    device.DownloadFile(sourcePath, destStream);
+                }
+
                 Console.WriteLine($"Copied: {fileName} ({index + 1}/{videoFiles.Count}, {((index + 1) * 100 / videoFiles.Count):F2}%)");
             }
         }
