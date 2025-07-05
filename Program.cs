@@ -10,20 +10,95 @@ namespace iPhoneVideoBackup
     class Program
     {
         // Define a constant array of file extensions to handle
-        private static readonly string[] SupportedExtensions = { "*.MOV", "*.MP4", "*.AVI" };
+        private static readonly string[] SupportedExtensions = { "*.MOV", "*.MP4", "*.AVI", "*.JPG" };
 
         static void Main(string[] args)
         {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+
             try
             {
-                // Prompt the user to commence copying files
-                Console.Write("❓ Do you want to commence copying files? (Y/N): ");
-                var startResponse = Console.ReadLine();
-                if (startResponse == null || !startResponse.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase))
+                // Parse command-line arguments for destination directory and device type
+                string destinationRoot = null;
+                string deviceType = null;
+                for (int i = 0; i < args.Length; i++)
                 {
-                    Console.WriteLine("⏹️ Operation cancelled by user.");
+                    if ((args[i].Equals("--dest", StringComparison.OrdinalIgnoreCase) || args[i].Equals("/dest", StringComparison.OrdinalIgnoreCase)) && i + 1 < args.Length)
+                    {
+                        destinationRoot = args[i + 1];
+                        i++;
+                        continue;
+                    }
+                    if ((args[i].Equals("--device", StringComparison.OrdinalIgnoreCase) || args[i].Equals("/device", StringComparison.OrdinalIgnoreCase)) && i + 1 < args.Length)
+                    {
+                        deviceType = args[i + 1].Trim().ToLowerInvariant();
+                        i++;
+                        continue;
+                    }
+                }
+
+                // If not provided, prompt the user for the destination directory
+                if (string.IsNullOrWhiteSpace(destinationRoot))
+                {
+                    Console.Write("📁 Enter destination directory (required): ");
+                    var inputDest = Console.ReadLine();
+                    if (!string.IsNullOrWhiteSpace(inputDest))
+                    {
+                        destinationRoot = inputDest.Trim();
+                    }
+                    else
+                    {
+                        Console.WriteLine("❌ Destination directory is required. Exiting.");
+                        return;
+                    }
+                }
+
+                // Validate the supplied path and drive
+                try
+                {
+                    // Check if path is absolute
+                    if (!Path.IsPathRooted(destinationRoot))
+                    {
+                        Console.WriteLine("❌ Please provide an absolute path (e.g., C:\\Backup). Exiting.");
+                        return;
+                    }
+                    // Check if drive exists
+                    var root = Path.GetPathRoot(destinationRoot);
+                    if (string.IsNullOrWhiteSpace(root) || !Directory.GetLogicalDrives().Any(d => string.Equals(d.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)))
+                    {
+                        Console.WriteLine($"❌ Drive '{root}' does not exist. Exiting.");
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ Invalid path: {ex.Message} Exiting.");
                     return;
                 }
+
+                // Prompt for device type if not set
+                if (string.IsNullOrWhiteSpace(deviceType))
+                {
+                    Console.WriteLine("Select device type:");
+                    Console.WriteLine("  1. iPhone");
+                    Console.WriteLine("  2. Pixel");
+                    Console.Write("Enter 1 or 2: ");
+                    var deviceChoice = Console.ReadLine();
+                    if (deviceChoice == "1") deviceType = "iphone";
+                    else if (deviceChoice == "2") deviceType = "pixel";
+                    else
+                    {
+                        Console.WriteLine("❌ Invalid device type selection. Exiting.");
+                        return;
+                    }
+                }
+
+                // Append today's date as a subfolder in yyyy-MM-dd format
+                var today = DateTime.Today.ToString("yyyy-MM-dd");
+                destinationRoot = Path.Combine(destinationRoot, today);
+
+                // Create the destination directory if it doesn't exist
+                Directory.CreateDirectory(destinationRoot);
 
                 // List all detected devices and their friendly names
                 var devices = MediaDevice.GetDevices();
@@ -33,26 +108,27 @@ namespace iPhoneVideoBackup
                     Console.WriteLine($"Device: {mediaDevice.FriendlyName}");
                 }
 
-                // Get today's date in "yyyy-MM-dd" format for folder naming
-                var today = DateTime.Today.ToString("yyyy-MM-dd");
-                var destinationRoot = Path.Combine("H:\\", "Steven", "iphone", today);
-
-                // Create the destination directory if it doesn't exist
-                Directory.CreateDirectory(destinationRoot);
-
-                // Find the connected iPhone device by its friendly name
-                var device = MediaDevice.GetDevices().FirstOrDefault(d => d.FriendlyName.Contains("iPhone"));
+                // Find the connected device by its friendly name
+                MediaDevice device = null;
+                if (deviceType == "iphone")
+                {
+                    device = devices.FirstOrDefault(d => d.FriendlyName.IndexOf("iPhone", StringComparison.OrdinalIgnoreCase) >= 0);
+                }
+                else if (deviceType == "pixel")
+                {
+                    device = devices.FirstOrDefault(d => d.FriendlyName.IndexOf("Pixel", StringComparison.OrdinalIgnoreCase) >= 0);
+                }
                 if (device == null)
                 {
-                    Console.WriteLine("❌ iPhone not found.");
-                    return; // Exit if no iPhone is found
+                    Console.WriteLine($"❌ {deviceType.First().ToString().ToUpper() + deviceType.Substring(1)} not found.");
+                    return; // Exit if no device is found
                 }
 
-                // Connect to the iPhone device BEFORE accessing files
+                // Connect to the device BEFORE accessing files
                 try
                 {
                     device.Connect();
-                    Console.WriteLine("✅ Connected to device.");
+                    Console.WriteLine($"✅ Connected to {deviceType} device.");
                 }
                 catch (Exception ex)
                 {
@@ -68,8 +144,27 @@ namespace iPhoneVideoBackup
 
                 // Now it's safe to access files and directories
                 // Path to the DCIM folder where photos and videos are stored
-                var dcimPath = @"\Internal Storage\DCIM";
+                string dcimPath;
+                if (deviceType == "pixel")
+                {
+                    dcimPath = @"\Internal shared storage\DCIM";
+                }
+                else
+                {
+                    dcimPath = @"\Internal Storage\DCIM";
+                }
                 var videoFiles = new List<(string sourcePath, string fileName, long size)>();
+
+                // Prompt the user to commence copying files
+                Console.Write("❓ Do you want to commence copying files? (Y/N): ");
+                var startResponse = Console.ReadLine();
+                if (startResponse == null || !startResponse.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("⏹️ Operation cancelled by user.");
+                    return;
+                }
+
+                Console.WriteLine($"\n📂 Starting to copy files from {dcimPath} to {destinationRoot}...\n");
 
                 // Enumerate all directories in the DCIM folder
                 foreach (var folder in device.GetDirectories(dcimPath))
@@ -144,7 +239,7 @@ namespace iPhoneVideoBackup
             }
         }
 
-        // Modified CopyFiles method to skip files with matching name and size
+        // Modified CopyFiles method to show size and average transfer speed
         static void CopyFiles(MediaDevice device, List<(string sourcePath, string fileName, long size)> videoFiles, string destinationRoot)
         {
             foreach (var (sourcePath, fileName, size, index) in videoFiles.Select((file, index) => (file.sourcePath, file.fileName, file.size, index)))
@@ -157,17 +252,25 @@ namespace iPhoneVideoBackup
                     var destFileInfo = new FileInfo(destPath);
                     if (destFileInfo.Length == size)
                     {
-                        Console.WriteLine($"Skipped (already copied): {fileName}");
+                        Console.WriteLine($"Skipped (already copied): {fileName} ({index + 1}/{videoFiles.Count}, {((index + 1) * 100 / videoFiles.Count):F2}%)");
+                        Console.Out.Flush();
                         continue;
                     }
                 }
 
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 using (var destStream = File.Create(destPath))
                 {
                     device.DownloadFile(sourcePath, destStream);
                 }
+                sw.Stop();
 
-                Console.WriteLine($"Copied: {fileName} ({index + 1}/{videoFiles.Count}, {((index + 1) * 100 / videoFiles.Count):F2}%)");
+                double sizeMB = size / (1024.0 * 1024.0);
+                double seconds = sw.Elapsed.TotalSeconds;
+                double speedMBps = seconds > 0 ? sizeMB / seconds : 0;
+
+                Console.WriteLine($"Copied: {fileName} ({index + 1}/{videoFiles.Count}, {((index + 1) * 100 / videoFiles.Count):F2}%) | Size: {sizeMB:F2} MB | Speed: {speedMBps:F2} MB/s");
+                Console.Out.Flush();
             }
         }
 
@@ -217,6 +320,7 @@ namespace iPhoneVideoBackup
                         // Delete the file from the iPhone
                         device.DeleteFile(path);
                         Console.WriteLine($"Deleted: {Path.GetFileName(path)}");
+                        Console.Out.Flush();
                     }
                 }
                 else
