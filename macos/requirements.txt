@@ -1,0 +1,9 @@
+# No external Python packages required
+# All dependencies are system-level tools installed via Homebrew
+
+# For iPhone support:
+#   brew install libimobiledevice ifuse
+#
+# For Android support:
+#   Install Android Platform Tools from:
+#   https://developer.android.com/studio/releases/platform-tools
