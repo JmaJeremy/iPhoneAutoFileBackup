@@ -190,13 +190,41 @@ namespace iPhoneVideoBackup
 
                 // Sort videoFiles by fileName before copying
                 videoFiles = videoFiles.OrderBy(f => f.fileName).ToList();
-                CopyFiles(device, videoFiles, destinationRoot);
 
-                // Verify that the copied files match the originals
-                VerifyFiles(videoFiles, destinationRoot, out var verified, out var failed);
+                // Check if there is sufficient space on the destination drive
+                long totalSizeNeeded = videoFiles.Sum(f => f.size);
+                if (!CheckDriveSpace(destinationRoot, totalSizeNeeded))
+                {
+                    Console.Write("\n❓ Insufficient space on destination drive. Do you still want to continue? (Y/N): ");
+                    var continueResponse = Console.ReadLine();
+                    if (continueResponse == null || !continueResponse.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine("⏹️ Operation cancelled by user.");
+                        device.Disconnect();
+                        return;
+                    }
+                }
 
-                // Handle deletion of successfully copied files based on user input
-                HandleDeletion(device, verified);
+                // Variables to track verification results
+                List<string> verified = new List<string>();
+                List<string> failed = new List<string>();
+
+                try
+                {
+                    CopyFiles(device, videoFiles, destinationRoot);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"\n⚠️ Transfer was interrupted: {ex.Message}");
+                }
+                finally
+                {
+                    // Verify that the copied files match the originals
+                    VerifyFiles(videoFiles, destinationRoot, out verified, out failed);
+
+                    // Handle deletion of successfully copied files based on user input
+                    HandleDeletion(device, verified);
+                }
 
                 // Disconnect the device
                 device.Disconnect();
@@ -301,6 +329,38 @@ namespace iPhoneVideoBackup
             {
                 Console.WriteLine("⚠️ Some files failed to verify:");
                 failed.ForEach(f => Console.WriteLine($" - {f}"));
+            }
+        }
+
+        // Method to check if there is sufficient space on the destination drive
+        static bool CheckDriveSpace(string destinationPath, long requiredBytes)
+        {
+            try
+            {
+                var driveInfo = new DriveInfo(Path.GetPathRoot(destinationPath));
+                long availableBytes = driveInfo.AvailableFreeSpace;
+                double requiredGB = requiredBytes / (1024.0 * 1024.0 * 1024.0);
+                double availableGB = availableBytes / (1024.0 * 1024.0 * 1024.0);
+
+                Console.WriteLine($"\n💾 Space Check:");
+                Console.WriteLine($"   Required: {requiredGB:F2} GB");
+                Console.WriteLine($"   Available: {availableGB:F2} GB");
+
+                if (availableBytes < requiredBytes)
+                {
+                    Console.WriteLine($"   ⚠️ Insufficient space! Short by {(requiredBytes - availableBytes) / (1024.0 * 1024.0 * 1024.0):F2} GB");
+                    return false;
+                }
+                else
+                {
+                    Console.WriteLine($"   ✅ Sufficient space available.");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Could not check drive space: {ex.Message}");
+                return true; // Assume sufficient space if check fails
             }
         }
 

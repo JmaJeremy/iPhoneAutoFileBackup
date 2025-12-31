@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="MediaDevices" Version="1.10.0" />
+    <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 
 </Project>
