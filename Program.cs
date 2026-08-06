@@ -12,6 +12,13 @@ namespace iPhoneVideoBackup
         // Define a constant array of file extensions to handle
         private static readonly string[] SupportedExtensions = { "*.MOV", "*.MP4", "*.AVI", "*.JPG" };
 
+        // Number of attempts (and delay between them) when a device read fails
+        private const int MaxDownloadAttempts = 3;
+        private const int DownloadRetryDelayMs = 2000;
+
+        // Total attempts (initial + retries) to copy and verify the full file set
+        private const int MaxVerificationRounds = 3;
+
         static void Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -209,22 +216,33 @@ namespace iPhoneVideoBackup
                 List<string> verified = new List<string>();
                 List<string> failed = new List<string>();
 
-                try
+                // Copy, then verify; if any files failed verification, retry just those files
+                var filesToCopy = videoFiles;
+                for (int round = 1; round <= MaxVerificationRounds; round++)
                 {
-                    CopyFiles(device, videoFiles, destinationRoot);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"\n⚠️ Transfer was interrupted: {ex.Message}");
-                }
-                finally
-                {
+                    try
+                    {
+                        CopyFiles(device, filesToCopy, destinationRoot);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"\n⚠️ Transfer was interrupted: {ex.Message}");
+                    }
+
                     // Verify that the copied files match the originals
                     VerifyFiles(videoFiles, destinationRoot, out verified, out failed);
 
-                    // Handle deletion of successfully copied files based on user input
-                    HandleDeletion(device, verified);
+                    if (failed.Count == 0 || round == MaxVerificationRounds)
+                    {
+                        break;
+                    }
+
+                    Console.WriteLine($"\n🔁 {failed.Count} file(s) failed verification. Retrying (attempt {round + 1}/{MaxVerificationRounds})...");
+                    filesToCopy = videoFiles.Where(f => failed.Contains(f.fileName)).ToList();
                 }
+
+                // Handle deletion of successfully copied files based on user input
+                HandleDeletion(device, verified);
 
                 // Disconnect the device
                 device.Disconnect();
@@ -287,9 +305,22 @@ namespace iPhoneVideoBackup
                 }
 
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                using (var destStream = File.Create(destPath))
+                for (int attempt = 1; attempt <= MaxDownloadAttempts; attempt++)
                 {
-                    device.DownloadFile(sourcePath, destStream);
+                    try
+                    {
+                        using (var destStream = File.Create(destPath))
+                        {
+                            device.DownloadFile(sourcePath, destStream);
+                        }
+                        break;
+                    }
+                    catch (Exception ex) when (attempt < MaxDownloadAttempts)
+                    {
+                        Console.WriteLine($"⚠️ Error reading {fileName} from device (attempt {attempt}/{MaxDownloadAttempts}): {ex.Message}. Retrying...");
+                        Console.Out.Flush();
+                        System.Threading.Thread.Sleep(DownloadRetryDelayMs);
+                    }
                 }
                 sw.Stop();
 
