@@ -35,7 +35,11 @@ class DeviceBackup:
     def check_disk_space(self, required_bytes: int) -> bool:
         """Check if there's sufficient space on the destination drive"""
         try:
-            stat = shutil.disk_usage(self.destination)
+            # The dated folder isn't created until copying starts, so check its nearest existing parent
+            check_path = self.destination
+            while not os.path.exists(check_path) and os.path.dirname(check_path) != check_path:
+                check_path = os.path.dirname(check_path)
+            stat = shutil.disk_usage(check_path)
             available_bytes = stat.free
             required_gb = required_bytes / (1024**3)
             available_gb = available_bytes / (1024**3)
@@ -389,7 +393,6 @@ def main():
         # Create date-based subdirectory
         today = datetime.today().strftime("%Y-%m-%d")
         destination_root = os.path.join(destination_root, today)
-        os.makedirs(destination_root, exist_ok=True)
         
         # Create appropriate backup handler
         if device_type == "iphone":
@@ -436,6 +439,9 @@ def main():
                     print("⏹️  Operation cancelled by user.")
                     return
             
+            # Create the destination directory only now that files are about to be copied
+            os.makedirs(destination_root, exist_ok=True)
+
             # Copy files
             try:
                 backup.copy_files(media_files)

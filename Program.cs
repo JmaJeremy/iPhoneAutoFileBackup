@@ -104,9 +104,6 @@ namespace iPhoneVideoBackup
                 var today = DateTime.Today.ToString("yyyy-MM-dd");
                 destinationRoot = Path.Combine(destinationRoot, today);
 
-                // Create the destination directory if it doesn't exist
-                Directory.CreateDirectory(destinationRoot);
-
                 // List all detected devices and their friendly names
                 var devices = MediaDevice.GetDevices();
                 Console.WriteLine($"Devices found: {devices.Count()}");
@@ -211,6 +208,9 @@ namespace iPhoneVideoBackup
                         return;
                     }
                 }
+
+                // Create the destination directory only now that files are about to be copied
+                Directory.CreateDirectory(destinationRoot);
 
                 // Variables to track verification results
                 List<string> verified = new List<string>();
