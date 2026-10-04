@@ -51,6 +51,12 @@ if ($existingTask) {
         Write-Host "Installation cancelled. Nothing was changed."
         exit 0
     }
+    # A running instance locks the executable, which would block the build and the copy
+    if ($existingTask.State -eq "Running") {
+        Write-Host "Stopping the running task..."
+        Stop-ScheduledTask -TaskName $TaskName
+        Start-Sleep -Seconds 2
+    }
 }
 
 # Build a fresh release so the installed program matches the current source;
