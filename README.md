@@ -40,6 +40,30 @@ dotnet publish -p:PublishProfile=FolderProfile
 
 The output is written to `bin\Release\net48\publish\`.
 
+## Installing (auto-launch when an iPhone is connected)
+
+[install.ps1](install.ps1) copies the program to `C:\Program Files\iPhoneVideoBackup` and creates a scheduled task that launches it whenever an iPhone is plugged in. Run it from an elevated (Run as administrator) PowerShell prompt in the repository root:
+
+```
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+The script:
+
+1. Checks whether the scheduled task (`backup iphone`) already exists, and asks before replacing it.
+2. Builds a fresh release (or uses the existing release build if the `dotnet` CLI is not installed).
+3. Asks for the folder to back up to (or pass it with `-Dest D:\Backup\iphone`).
+4. Copies the program to Program Files and registers the task for the current user.
+
+The task is triggered by the Windows MTP driver's "device connected" event, so it also fires when other MTP devices (such as an Android phone) are connected; the program exits if no iPhone is found.
+
+To uninstall, run from an elevated prompt:
+
+```
+Unregister-ScheduledTask -TaskName "backup iphone" -Confirm:$false
+Remove-Item "$env:ProgramFiles\iPhoneVideoBackup" -Recurse
+```
+
 ## macOS
 
 A Python version for macOS lives in [macos/](macos/). It has no build step; see [macos/README.md](macos/README.md) for setup and usage.
