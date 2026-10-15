@@ -27,8 +27,11 @@ dotnet run --project iPhoneVideoBackup.csproj -- --dest C:\Backup --device iphon
 
 - `--dest` — absolute path of the backup folder. Files are copied into a subfolder named after today's date (`yyyy-MM-dd`).
 - `--device` — `iphone` or `pixel`.
+- `-y` / `--yes` — start copying without asking, as long as there is enough free space.
+- `--retry-delay <seconds>` — how long to wait before reconnecting if the phone is disconnected or the transfer is interrupted (default 10). The program reconnects and resumes, skipping files already copied, and gives up after 3 attempts in a row that make no progress.
+- `--help` — show usage.
 
-If either option is left out, the program asks for it.
+If `--dest` or `--device` is left out, the program asks for it.
 
 ## Publishing
 

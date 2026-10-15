@@ -19,28 +19,76 @@ namespace iPhoneVideoBackup
         // Total attempts (initial + retries) to copy and verify the full file set
         private const int MaxVerificationRounds = 3;
 
+        // Attempts to reconnect (and default wait before each) when the connection to the device is lost
+        private const int MaxReconnectAttempts = 3;
+        private const int DefaultReconnectDelaySeconds = 10;
+        private const int MaxReconnectDelaySeconds = 3600;
+
+        // Held for the life of the process so a second copy can tell one is already running
+        private const string InstanceMutexName = @"Global\iPhoneVideoBackup";
+        private static System.Threading.Mutex instanceMutex;
+
         static void Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+            // Show usage and exit straight away, without waiting for Enter
+            if (args.Any(a => IsOption(a, "help") || a.Equals("-h", StringComparison.OrdinalIgnoreCase) || a == "/?"))
+            {
+                PrintUsage();
+                return;
+            }
+
+            // Quit if another instance is already running
+            if (!TryClaimSingleInstance())
+            {
+                Console.WriteLine("⏹️ iPhoneVideoBackup is already running. Exiting.");
+                System.Threading.Thread.Sleep(3000); // Leave the message up long enough to read
+                return;
+            }
+
             try
             {
-                // Parse command-line arguments for destination directory and device type
+                // Parse command-line arguments
                 string destinationRoot = null;
                 string deviceType = null;
+                bool autoConfirm = false;
+                int reconnectDelaySeconds = DefaultReconnectDelaySeconds;
                 for (int i = 0; i < args.Length; i++)
                 {
-                    if ((args[i].Equals("--dest", StringComparison.OrdinalIgnoreCase) || args[i].Equals("/dest", StringComparison.OrdinalIgnoreCase)) && i + 1 < args.Length)
+                    var arg = args[i];
+                    if (IsOption(arg, "dest") || IsOption(arg, "device") || IsOption(arg, "retry-delay"))
                     {
-                        destinationRoot = args[i + 1];
-                        i++;
-                        continue;
+                        if (i + 1 >= args.Length)
+                        {
+                            Console.WriteLine($"❌ {arg} requires a value.");
+                            PrintUsage();
+                            return;
+                        }
+                        var value = args[++i];
+                        if (IsOption(arg, "dest"))
+                        {
+                            destinationRoot = value;
+                        }
+                        else if (IsOption(arg, "device"))
+                        {
+                            deviceType = value.Trim().ToLowerInvariant();
+                        }
+                        else if (!int.TryParse(value, out reconnectDelaySeconds) || reconnectDelaySeconds < 0 || reconnectDelaySeconds > MaxReconnectDelaySeconds)
+                        {
+                            Console.WriteLine($"❌ {arg} must be a number of seconds between 0 and {MaxReconnectDelaySeconds}.");
+                            return;
+                        }
                     }
-                    if ((args[i].Equals("--device", StringComparison.OrdinalIgnoreCase) || args[i].Equals("/device", StringComparison.OrdinalIgnoreCase)) && i + 1 < args.Length)
+                    else if (IsOption(arg, "yes") || arg.Equals("-y", StringComparison.OrdinalIgnoreCase) || arg.Equals("/y", StringComparison.OrdinalIgnoreCase))
                     {
-                        deviceType = args[i + 1].Trim().ToLowerInvariant();
-                        i++;
-                        continue;
+                        autoConfirm = true;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"❌ Unknown option '{arg}'.");
+                        PrintUsage();
+                        return;
                     }
                 }
 
@@ -112,37 +160,10 @@ namespace iPhoneVideoBackup
                     Console.WriteLine($"Device: {mediaDevice.FriendlyName}");
                 }
 
-                // Find the connected device by its friendly name
-                MediaDevice device = null;
-                if (deviceType == "iphone")
-                {
-                    device = devices.FirstOrDefault(d => d.FriendlyName.IndexOf("iPhone", StringComparison.OrdinalIgnoreCase) >= 0);
-                }
-                else if (deviceType == "pixel")
-                {
-                    device = devices.FirstOrDefault(d => d.FriendlyName.IndexOf("Pixel", StringComparison.OrdinalIgnoreCase) >= 0);
-                }
+                // Find the device and connect to it BEFORE accessing files
+                MediaDevice device = ConnectToDevice(deviceType);
                 if (device == null)
                 {
-                    Console.WriteLine($"❌ {deviceType.First().ToString().ToUpper() + deviceType.Substring(1)} not found.");
-                    return; // Exit if no device is found
-                }
-
-                // Connect to the device BEFORE accessing files
-                try
-                {
-                    device.Connect();
-                    Console.WriteLine($"✅ Connected to {deviceType} device.");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"❌ Failed to connect: {ex.Message}");
-                    return;
-                }
-
-                if (!device.IsConnected)
-                {
-                    Console.WriteLine("❌ Device is not connected.");
                     return;
                 }
 
@@ -159,13 +180,17 @@ namespace iPhoneVideoBackup
                 }
                 var videoFiles = new List<(string sourcePath, string fileName, long size)>();
 
-                // Prompt the user to commence copying files
-                Console.Write("❓ Do you want to commence copying files? (Y/N): ");
-                var startResponse = Console.ReadLine();
-                if (startResponse == null || !startResponse.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase))
+                // Prompt the user to commence copying files, unless -y was given
+                // (the space check below still asks if there isn't enough room)
+                if (!autoConfirm)
                 {
-                    Console.WriteLine("⏹️ Operation cancelled by user.");
-                    return;
+                    Console.Write("❓ Do you want to commence copying files? (Y/N): ");
+                    var startResponse = Console.ReadLine();
+                    if (startResponse == null || !startResponse.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine("⏹️ Operation cancelled by user.");
+                        return;
+                    }
                 }
 
                 Console.WriteLine($"\n📂 Starting to copy files from {dcimPath} to {destinationRoot}...\n");
@@ -216,10 +241,14 @@ namespace iPhoneVideoBackup
                 List<string> verified = new List<string>();
                 List<string> failed = new List<string>();
 
-                // Copy, then verify; if any files failed verification, retry just those files
+                // Copy, then verify; if any files failed verification, retry just those files.
+                // If the transfer is interrupted (e.g. the phone was disconnected), reconnect and resume.
                 var filesToCopy = videoFiles;
-                for (int round = 1; round <= MaxVerificationRounds; round++)
+                int verificationRound = 1;
+                int reconnectAttempts = 0;
+                while (true)
                 {
+                    bool interrupted = false;
                     try
                     {
                         CopyFiles(device, filesToCopy, destinationRoot);
@@ -227,25 +256,55 @@ namespace iPhoneVideoBackup
                     catch (Exception ex)
                     {
                         Console.WriteLine($"\n⚠️ Transfer was interrupted: {ex.Message}");
+                        interrupted = true;
                     }
 
                     // Verify that the copied files match the originals
+                    int previouslyVerified = verified.Count;
                     VerifyFiles(videoFiles, destinationRoot, out verified, out failed);
 
-                    if (failed.Count == 0 || round == MaxVerificationRounds)
+                    if (failed.Count == 0)
                     {
                         break;
                     }
-
-                    Console.WriteLine($"\n🔁 {failed.Count} file(s) failed verification. Retrying (attempt {round + 1}/{MaxVerificationRounds})...");
                     filesToCopy = videoFiles.Where(f => failed.Contains(f.fileName)).ToList();
+
+                    if (interrupted)
+                    {
+                        // Only interruptions that made no progress count toward giving up
+                        if (verified.Count > previouslyVerified)
+                        {
+                            reconnectAttempts = 0;
+                        }
+                        device = Reconnect(device, deviceType, reconnectDelaySeconds, ref reconnectAttempts);
+                        if (device == null)
+                        {
+                            Console.WriteLine($"\n❌ Could not resume the transfer after {MaxReconnectAttempts} attempts. Giving up.");
+                            break;
+                        }
+                        continue;
+                    }
+
+                    if (verificationRound == MaxVerificationRounds)
+                    {
+                        break;
+                    }
+                    verificationRound++;
+                    Console.WriteLine($"\n🔁 {failed.Count} file(s) failed verification. Retrying (attempt {verificationRound}/{MaxVerificationRounds})...");
                 }
 
-                // Handle deletion of successfully copied files based on user input
-                HandleDeletion(device, verified);
+                if (device != null)
+                {
+                    // Handle deletion of successfully copied files based on user input
+                    HandleDeletion(device, verified);
 
-                // Disconnect the device
-                device.Disconnect();
+                    // Disconnect the device
+                    device.Disconnect();
+                }
+                else if (verified.Count > 0)
+                {
+                    Console.WriteLine("⏭️ Skipped deletion because the device is no longer connected.");
+                }
                 Console.WriteLine("\n🎉 Done.");
             }
             catch (Exception ex)
@@ -259,6 +318,103 @@ namespace iPhoneVideoBackup
                 Console.WriteLine("\nPress Enter to exit...");
                 Console.ReadLine();
             }
+        }
+
+        // Create the named mutex; returns false if another instance already owns it
+        static bool TryClaimSingleInstance()
+        {
+            try
+            {
+                instanceMutex = new System.Threading.Mutex(true, InstanceMutexName, out bool createdNew);
+                return createdNew;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // The mutex exists but belongs to an elevated instance (e.g. the scheduled task)
+                return false;
+            }
+        }
+
+        // Matches an option written as --name or /name
+        static bool IsOption(string arg, string name)
+        {
+            return arg.Equals("--" + name, StringComparison.OrdinalIgnoreCase) || arg.Equals("/" + name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        static void PrintUsage()
+        {
+            Console.WriteLine("Usage: iPhoneVideoBackup.exe [--dest <folder>] [--device iphone|pixel] [-y] [--retry-delay <seconds>]");
+            Console.WriteLine();
+            Console.WriteLine("Backs up photos and videos from a USB-connected phone to <folder>\\yyyy-MM-dd,");
+            Console.WriteLine("verifies the copies, and optionally deletes the originals from the phone.");
+            Console.WriteLine();
+            Console.WriteLine("Options:");
+            Console.WriteLine("  --dest <folder>          Absolute path of the backup folder. Prompted for if omitted.");
+            Console.WriteLine("  --device iphone|pixel    Type of phone to back up. Prompted for if omitted.");
+            Console.WriteLine("  -y, --yes                Start copying without asking, as long as there is enough free space.");
+            Console.WriteLine("  --retry-delay <seconds>  Seconds to wait before reconnecting when the connection to the phone");
+            Console.WriteLine($"                           is lost (default {DefaultReconnectDelaySeconds}). Gives up after {MaxReconnectAttempts} failed attempts.");
+            Console.WriteLine("  -h, --help               Show this help.");
+            Console.WriteLine();
+            Console.WriteLine("Options can also be written with a slash, e.g. /dest or /y.");
+        }
+
+        // Find the device by its friendly name and connect to it; returns null if that fails
+        static MediaDevice ConnectToDevice(string deviceType)
+        {
+            string nameMatch = deviceType == "iphone" ? "iPhone" : deviceType == "pixel" ? "Pixel" : null;
+            try
+            {
+                var device = nameMatch == null ? null : MediaDevice.GetDevices().FirstOrDefault(d => d.FriendlyName.IndexOf(nameMatch, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (device == null)
+                {
+                    Console.WriteLine($"❌ {deviceType.First().ToString().ToUpper() + deviceType.Substring(1)} not found.");
+                    return null;
+                }
+
+                device.Connect();
+                if (!device.IsConnected)
+                {
+                    Console.WriteLine("❌ Device is not connected.");
+                    return null;
+                }
+
+                Console.WriteLine($"✅ Connected to {deviceType} device.");
+                return device;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Failed to connect: {ex.Message}");
+                return null;
+            }
+        }
+
+        // Wait, then reconnect to the device; returns null once MaxReconnectAttempts have been used up
+        static MediaDevice Reconnect(MediaDevice device, string deviceType, int delaySeconds, ref int attempts)
+        {
+            try
+            {
+                device.Disconnect();
+            }
+            catch
+            {
+                // The old connection is most likely already gone
+            }
+
+            while (attempts < MaxReconnectAttempts)
+            {
+                attempts++;
+                Console.WriteLine($"\n🔌 Waiting {delaySeconds}s, then reconnecting to the device (attempt {attempts}/{MaxReconnectAttempts})...");
+                System.Threading.Thread.Sleep(TimeSpan.FromSeconds(delaySeconds));
+
+                var newDevice = ConnectToDevice(deviceType);
+                if (newDevice != null)
+                {
+                    Console.WriteLine("🔁 Resuming copy...\n");
+                    return newDevice;
+                }
+            }
+            return null;
         }
 
         // Method to compute SHA256 checksum of a file
