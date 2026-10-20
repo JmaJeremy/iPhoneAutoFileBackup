@@ -1,9 +1,19 @@
 @echo off
 setlocal
 
-rem ---- Set the program to run here ----
-set "PROGRAM=C:\scripts\iPhoneVideoBackup\bin\Release\net48\publish\iPhoneVideoBackup.exe /dest H:\Steven\iphone /device iphone /y"
-rem -------------------------------------
+rem Wrapper for iPhoneVideoBackup.exe: counts down for 10 seconds so the backup can be
+rem cancelled, then runs the program with whatever arguments this script was given, e.g.
+rem   start_iphone_copy.bat /dest D:\Backup\iphone /device iphone /y
+
+rem Use the program installed alongside this script, or else a build in the repository
+set "EXE=%~dp0iPhoneVideoBackup.exe"
+if not exist "%EXE%" set "EXE=%~dp0bin\Release\net48\publish\iPhoneVideoBackup.exe"
+if not exist "%EXE%" set "EXE=%~dp0bin\Release\net48\iPhoneVideoBackup.exe"
+if not exist "%EXE%" (
+    echo iPhoneVideoBackup.exe was not found next to this script or in bin\Release\net48.
+    pause
+    exit /b 1
+)
 
 echo Press any key to cancel, starting in 10 seconds...
 echo.
@@ -20,5 +30,5 @@ if errorlevel 1 (
 
 echo.
 echo Starting program...
-start "" %PROGRAM%
+"%EXE%" %*
 endlocal

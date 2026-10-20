@@ -3,8 +3,10 @@
     Installs iPhoneVideoBackup and creates a scheduled task that launches it when an iPhone is connected.
 
 .DESCRIPTION
-    Copies the built executable to Program Files and registers a scheduled task triggered by the
-    Windows MTP driver event that is logged when a device is connected over USB.
+    Copies the built executable and the start_iphone_copy.bat wrapper to Program Files and registers
+    a scheduled task, triggered by the Windows MTP driver event that is logged when a device is
+    connected over USB. The task runs the wrapper, which counts down for 10 seconds (any key cancels)
+    and then starts the backup without asking for confirmation.
     Must be run from an elevated (Administrator) PowerShell prompt.
 
 .PARAMETER Dest
@@ -28,6 +30,7 @@ $ErrorActionPreference = "Stop"
 
 $AppName    = "iPhoneVideoBackup"
 $ExeName    = "$AppName.exe"
+$WrapperName = "start_iphone_copy.bat"
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $EventLog   = "Microsoft-Windows-WPD-MTPClassDriver/Operational"
 
@@ -55,6 +58,8 @@ if ($existingTask) {
     if ($existingTask.State -eq "Running") {
         Write-Host "Stopping the running task..."
         Stop-ScheduledTask -TaskName $TaskName
+        # Stopping the task ends the wrapper, but the program it started may still be running
+        Get-Process -Name $AppName -ErrorAction SilentlyContinue | Stop-Process -Force
         Start-Sleep -Seconds 2
     }
 }
@@ -100,7 +105,8 @@ if (-not (Test-Path $drive)) {
 Write-Host "Installing from $sourceDir to $InstallDir..."
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Get-ChildItem -Path $sourceDir -File | Copy-Item -Destination $InstallDir -Force
-$exePath = Join-Path $InstallDir $ExeName
+Copy-Item -Path (Join-Path $PSScriptRoot $WrapperName) -Destination $InstallDir -Force
+$wrapperPath = Join-Path $InstallDir $WrapperName
 
 # The task is triggered by an event in this log, so make sure the log is enabled
 $log = Get-WinEvent -ListLog $EventLog
@@ -110,13 +116,17 @@ if (-not $log.IsEnabled) {
     $log.SaveChanges()
 }
 
-# Build the task definition
+# Build the task definition. The task runs the wrapper through cmd.exe; /y skips the program's
+# "commence copying?" prompt, since the wrapper's countdown already gives a chance to cancel.
 if ($Dest -match '\s') {
-    $arguments = "/dest `"$Dest`" /device iphone"
+    $programArguments = "/dest `"$Dest`" /device iphone /y"
 } else {
-    $arguments = "/dest $Dest /device iphone"
+    $programArguments = "/dest $Dest /device iphone /y"
 }
-$xmlCommand   = [Security.SecurityElement]::Escape($exePath)
+# cmd /c strips the outer pair of quotes, leaving the quoted wrapper path and its arguments
+$command   = Join-Path $env:SystemRoot "System32\cmd.exe"
+$arguments = "/c `"`"$wrapperPath`" $programArguments`""
+$xmlCommand   = [Security.SecurityElement]::Escape($command)
 $xmlArguments = [Security.SecurityElement]::Escape($arguments)
 $xmlAuthor    = [Security.SecurityElement]::Escape($identity.Name)
 $userSid      = $identity.User.Value
@@ -175,7 +185,7 @@ Register-ScheduledTask -TaskName $TaskName -Xml $taskXml -Force | Out-Null
 
 Write-Host ""
 Write-Host "Installed."
-Write-Host "  Program: $exePath"
+Write-Host "  Program: $InstallDir"
 Write-Host "  Task:    $TaskName"
-Write-Host "  Runs:    $exePath $arguments"
+Write-Host "  Runs:    `"$wrapperPath`" $programArguments"
 Write-Host "Connect an iPhone over USB to start a backup."

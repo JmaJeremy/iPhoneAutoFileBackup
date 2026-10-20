@@ -33,6 +33,18 @@ dotnet run --project iPhoneVideoBackup.csproj -- --dest C:\Backup --device iphon
 
 If `--dest` or `--device` is left out, the program asks for it.
 
+While copying, each file shows the elapsed time, the estimated time remaining and the estimated finish time (local time), based on the overall average transfer speed. When copying is done, the program prints the start time, end time and total time before asking whether to delete the originals.
+
+### Countdown wrapper
+
+[start_iphone_copy.bat](start_iphone_copy.bat) counts down for 10 seconds (press any key to cancel) and then runs the program, passing along any arguments it was given:
+
+```
+start_iphone_copy.bat /dest D:\Backup\iphone /device iphone /y
+```
+
+It uses the `iPhoneVideoBackup.exe` in its own folder, or else a release build under `bin\Release\net48`.
+
 ## Publishing
 
 To produce a release build for copying to another machine:
@@ -45,7 +57,7 @@ The output is written to `bin\Release\net48\publish\`.
 
 ## Installing (auto-launch when an iPhone is connected)
 
-[install.ps1](install.ps1) copies the program to `C:\Program Files\iPhoneVideoBackup` and creates a scheduled task that launches it whenever an iPhone is plugged in. Run it from an elevated (Run as administrator) PowerShell prompt in the repository root:
+[install.ps1](install.ps1) copies the program and the [countdown wrapper](#countdown-wrapper) to `C:\Program Files\iPhoneVideoBackup` and creates a scheduled task that runs the wrapper whenever an iPhone is plugged in. Run it from an elevated (Run as administrator) PowerShell prompt in the repository root:
 
 ```
 powershell -ExecutionPolicy Bypass -File install.ps1
@@ -56,7 +68,9 @@ The script:
 1. Checks whether the scheduled task (`backup iphone`) already exists, and asks before replacing it.
 2. Builds a fresh release (or uses the existing release build if the `dotnet` CLI is not installed).
 3. Asks for the folder to back up to (or pass it with `-Dest D:\Backup\iphone`).
-4. Copies the program to Program Files and registers the task for the current user.
+4. Copies the program and wrapper to Program Files and registers the task for the current user.
+
+The task runs the wrapper with `/dest <your folder> /device iphone /y`, so after the 10-second countdown the backup starts without asking for confirmation (it still asks if there isn't enough free space).
 
 The task is triggered by the Windows MTP driver's "device connected" event, so it also fires when other MTP devices (such as an Android phone) are connected; the program exits if no iPhone is found.
 

@@ -246,12 +246,16 @@ namespace iPhoneVideoBackup
                 var filesToCopy = videoFiles;
                 int verificationRound = 1;
                 int reconnectAttempts = 0;
+                var progress = new CopyProgress();
                 while (true)
                 {
+                    // ETA is based on what this pass still has to copy (files already at the destination are skipped)
+                    progress.BytesRemaining = filesToCopy.Where(f => !IsAlreadyCopied(Path.Combine(destinationRoot, f.fileName), f.size)).Sum(f => f.size);
+
                     bool interrupted = false;
                     try
                     {
-                        CopyFiles(device, filesToCopy, destinationRoot);
+                        CopyFiles(device, filesToCopy, destinationRoot, progress);
                     }
                     catch (Exception ex)
                     {
@@ -292,6 +296,14 @@ namespace iPhoneVideoBackup
                     verificationRound++;
                     Console.WriteLine($"\n🔁 {failed.Count} file(s) failed verification. Retrying (attempt {verificationRound}/{MaxVerificationRounds})...");
                 }
+
+                // Summarize how long the copy took
+                var endTime = DateTime.Now;
+                Console.WriteLine("\n⏱️ Copy summary:");
+                Console.WriteLine($"   Started:  {FormatLocalTime(progress.StartTime)}");
+                Console.WriteLine($"   Finished: {FormatLocalTime(endTime)}");
+                Console.WriteLine($"   Total time: {FormatDuration(endTime - progress.StartTime)}");
+                Console.WriteLine($"   Copied: {progress.BytesCopied / (1024.0 * 1024.0 * 1024.0):F2} GB at an average of {progress.AverageSpeed / (1024.0 * 1024.0):F2} MB/s");
 
                 if (device != null)
                 {
@@ -442,22 +454,18 @@ namespace iPhoneVideoBackup
         }
 
         // Modified CopyFiles method to show size and average transfer speed
-        static void CopyFiles(MediaDevice device, List<(string sourcePath, string fileName, long size)> videoFiles, string destinationRoot)
+        static void CopyFiles(MediaDevice device, List<(string sourcePath, string fileName, long size)> videoFiles, string destinationRoot, CopyProgress progress)
         {
             foreach (var (sourcePath, fileName, size, index) in videoFiles.Select((file, index) => (file.sourcePath, file.fileName, file.size, index)))
             {
                 var destPath = Path.Combine(destinationRoot, fileName);
 
                 // If file exists and size matches, skip copying
-                if (File.Exists(destPath))
+                if (IsAlreadyCopied(destPath, size))
                 {
-                    var destFileInfo = new FileInfo(destPath);
-                    if (destFileInfo.Length == size)
-                    {
-                        Console.WriteLine($"Skipped (already copied): {fileName} ({index + 1}/{videoFiles.Count}, {((index + 1) * 100 / videoFiles.Count):F2}%)");
-                        Console.Out.Flush();
-                        continue;
-                    }
+                    Console.WriteLine($"Skipped (already copied): {fileName} ({index + 1}/{videoFiles.Count}, {((index + 1) * 100 / videoFiles.Count):F2}%)");
+                    Console.Out.Flush();
+                    continue;
                 }
 
                 var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -484,8 +492,53 @@ namespace iPhoneVideoBackup
                 double seconds = sw.Elapsed.TotalSeconds;
                 double speedMBps = seconds > 0 ? sizeMB / seconds : 0;
 
+                progress.BytesCopied += size;
+                progress.BytesRemaining = Math.Max(0, progress.BytesRemaining - size);
+                progress.TransferTime += sw.Elapsed;
+
                 Console.WriteLine($"Copied: {fileName} ({index + 1}/{videoFiles.Count}, {((index + 1) * 100 / videoFiles.Count):F2}%) | Size: {sizeMB:F2} MB | Speed: {speedMBps:F2} MB/s");
+                Console.WriteLine($"   ⏱️ {progress.Describe()}");
                 Console.Out.Flush();
+            }
+        }
+
+        static bool IsAlreadyCopied(string destPath, long size)
+        {
+            return File.Exists(destPath) && new FileInfo(destPath).Length == size;
+        }
+
+        // Formats a duration as h:mm:ss (hours can exceed 24)
+        static string FormatDuration(TimeSpan duration)
+        {
+            return $"{(int)duration.TotalHours}:{duration.Minutes:D2}:{duration.Seconds:D2}";
+        }
+
+        // Formats a local time, adding the date if it isn't today
+        static string FormatLocalTime(DateTime time)
+        {
+            return time.Date == DateTime.Today ? time.ToString("T") : time.ToString("ddd d MMM, T");
+        }
+
+        // Tracks the overall copy across retry and reconnect passes, for the ETA and the final summary
+        class CopyProgress
+        {
+            public DateTime StartTime = DateTime.Now;
+            public long BytesCopied;
+            public long BytesRemaining;
+            public TimeSpan TransferTime;
+
+            // Average speed over all bytes copied so far, in bytes per second
+            public double AverageSpeed => TransferTime.TotalSeconds > 0 ? BytesCopied / TransferTime.TotalSeconds : 0;
+
+            public string Describe()
+            {
+                var elapsed = DateTime.Now - StartTime;
+                if (AverageSpeed <= 0)
+                {
+                    return $"Elapsed: {FormatDuration(elapsed)}";
+                }
+                var remaining = TimeSpan.FromSeconds(BytesRemaining / AverageSpeed);
+                return $"Elapsed: {FormatDuration(elapsed)} | Remaining: ~{FormatDuration(remaining)} | Finishes: ~{FormatLocalTime(DateTime.Now + remaining)}";
             }
         }
 
