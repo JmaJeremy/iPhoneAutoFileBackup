@@ -24,6 +24,9 @@ namespace iPhoneVideoBackup
         private const int DefaultReconnectDelaySeconds = 10;
         private const int MaxReconnectDelaySeconds = 3600;
 
+        // Upper limit for the --wait countdown
+        private const int MaxWaitSeconds = 3600;
+
         // Held for the life of the process so a second copy can tell one is already running
         private const string InstanceMutexName = @"Global\iPhoneVideoBackup";
         private static System.Threading.Mutex instanceMutex;
@@ -33,7 +36,7 @@ namespace iPhoneVideoBackup
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
             // Show usage and exit straight away, without waiting for Enter
-            if (args.Any(a => IsOption(a, "help") || a.Equals("-h", StringComparison.OrdinalIgnoreCase) || a == "/?"))
+            if (args.Any(a => IsOption(a, "help") || IsOption(a, "h") || a == "/?"))
             {
                 PrintUsage();
                 return;
@@ -53,11 +56,13 @@ namespace iPhoneVideoBackup
                 string destinationRoot = null;
                 string deviceType = null;
                 bool autoConfirm = false;
+                bool autoDelete = false;
+                int waitSeconds = 0;
                 int reconnectDelaySeconds = DefaultReconnectDelaySeconds;
                 for (int i = 0; i < args.Length; i++)
                 {
                     var arg = args[i];
-                    if (IsOption(arg, "dest") || IsOption(arg, "device") || IsOption(arg, "retry-delay"))
+                    if (IsOption(arg, "dest") || IsOption(arg, "device") || IsOption(arg, "retry-delay") || IsOption(arg, "wait"))
                     {
                         if (i + 1 >= args.Length)
                         {
@@ -74,15 +79,27 @@ namespace iPhoneVideoBackup
                         {
                             deviceType = value.Trim().ToLowerInvariant();
                         }
+                        else if (IsOption(arg, "wait"))
+                        {
+                            if (!int.TryParse(value, out waitSeconds) || waitSeconds < 0 || waitSeconds > MaxWaitSeconds)
+                            {
+                                Console.WriteLine($"❌ {arg} must be a number of seconds between 0 and {MaxWaitSeconds}.");
+                                return;
+                            }
+                        }
                         else if (!int.TryParse(value, out reconnectDelaySeconds) || reconnectDelaySeconds < 0 || reconnectDelaySeconds > MaxReconnectDelaySeconds)
                         {
                             Console.WriteLine($"❌ {arg} must be a number of seconds between 0 and {MaxReconnectDelaySeconds}.");
                             return;
                         }
                     }
-                    else if (IsOption(arg, "yes") || arg.Equals("-y", StringComparison.OrdinalIgnoreCase) || arg.Equals("/y", StringComparison.OrdinalIgnoreCase))
+                    else if (IsOption(arg, "yes") || IsOption(arg, "y"))
                     {
                         autoConfirm = true;
+                    }
+                    else if (IsOption(arg, "autodelete"))
+                    {
+                        autoDelete = true;
                     }
                     else
                     {
@@ -151,6 +168,13 @@ namespace iPhoneVideoBackup
                 // Append today's date as a subfolder in yyyy-MM-dd format
                 var today = DateTime.Today.ToString("yyyy-MM-dd");
                 destinationRoot = Path.Combine(destinationRoot, today);
+
+                // Give the user a chance to cancel before anything happens
+                if (waitSeconds > 0 && !Countdown(waitSeconds))
+                {
+                    Console.WriteLine("⏹️ Cancelled.");
+                    return;
+                }
 
                 // List all detected devices and their friendly names
                 var devices = MediaDevice.GetDevices();
@@ -308,7 +332,7 @@ namespace iPhoneVideoBackup
                 if (device != null)
                 {
                     // Handle deletion of successfully copied files based on user input
-                    HandleDeletion(device, verified);
+                    HandleDeletion(device, verified, autoDelete && failed.Count == 0);
 
                     // Disconnect the device
                     device.Disconnect();
@@ -347,15 +371,54 @@ namespace iPhoneVideoBackup
             }
         }
 
-        // Matches an option written as --name or /name
+        // Matches an option written as -name, --name or /name
         static bool IsOption(string arg, string name)
         {
-            return arg.Equals("--" + name, StringComparison.OrdinalIgnoreCase) || arg.Equals("/" + name, StringComparison.OrdinalIgnoreCase);
+            return arg.Equals("-" + name, StringComparison.OrdinalIgnoreCase)
+                || arg.Equals("--" + name, StringComparison.OrdinalIgnoreCase)
+                || arg.Equals("/" + name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Counts down, one line per second; returns false if a key was pressed to cancel.
+        // Without an interactive console the keypress check is skipped and the countdown just runs.
+        static bool Countdown(int seconds)
+        {
+            bool canReadKeys = true;
+            try
+            {
+                var _ = Console.KeyAvailable;
+            }
+            catch (InvalidOperationException)
+            {
+                canReadKeys = false;
+            }
+
+            if (canReadKeys)
+            {
+                Console.WriteLine("Press any key to cancel.");
+            }
+            for (int remaining = seconds; remaining > 0; remaining--)
+            {
+                Console.WriteLine($"⏳ Starting in {remaining} second{(remaining == 1 ? "" : "s")}...");
+                var end = DateTime.Now.AddSeconds(1);
+                while (DateTime.Now < end)
+                {
+                    if (canReadKeys && Console.KeyAvailable)
+                    {
+                        Console.ReadKey(true);
+                        return false;
+                    }
+                    System.Threading.Thread.Sleep(50);
+                }
+            }
+            Console.WriteLine();
+            return true;
         }
 
         static void PrintUsage()
         {
-            Console.WriteLine("Usage: iPhoneVideoBackup.exe [--dest <folder>] [--device iphone|pixel] [-y] [--retry-delay <seconds>]");
+            Console.WriteLine("Usage: iPhoneVideoBackup.exe [--dest <folder>] [--device iphone|pixel] [-y] [--wait <seconds>]");
+            Console.WriteLine("                             [--autodelete] [--retry-delay <seconds>]");
             Console.WriteLine();
             Console.WriteLine("Backs up photos and videos from a USB-connected phone to <folder>\\yyyy-MM-dd,");
             Console.WriteLine("verifies the copies, and optionally deletes the originals from the phone.");
@@ -364,11 +427,15 @@ namespace iPhoneVideoBackup
             Console.WriteLine("  --dest <folder>          Absolute path of the backup folder. Prompted for if omitted.");
             Console.WriteLine("  --device iphone|pixel    Type of phone to back up. Prompted for if omitted.");
             Console.WriteLine("  -y, --yes                Start copying without asking, as long as there is enough free space.");
+            Console.WriteLine("  --wait <seconds>         Count down before starting; press any key during the countdown to cancel.");
+            Console.WriteLine("                           With -y, the backup then starts automatically.");
+            Console.WriteLine("  --autodelete             Delete the originals from the phone without asking, but only if every");
+            Console.WriteLine("                           file copied and verified successfully. Otherwise you are asked as usual.");
             Console.WriteLine("  --retry-delay <seconds>  Seconds to wait before reconnecting when the connection to the phone");
             Console.WriteLine($"                           is lost (default {DefaultReconnectDelaySeconds}). Gives up after {MaxReconnectAttempts} failed attempts.");
             Console.WriteLine("  -h, --help               Show this help.");
             Console.WriteLine();
-            Console.WriteLine("Options can also be written with a slash, e.g. /dest or /y.");
+            Console.WriteLine("Options can be written with -, -- or /, e.g. -wait, --wait or /wait.");
         }
 
         // Find the device by its friendly name and connect to it; returns null if that fails
@@ -605,14 +672,25 @@ namespace iPhoneVideoBackup
         }
 
         // Method to handle deletion of successfully copied files from the iPhone
-        static void HandleDeletion(MediaDevice device, List<string> verified)
+        // deleteWithoutAsking is only set when --autodelete was given and every file verified
+        static void HandleDeletion(MediaDevice device, List<string> verified, bool deleteWithoutAsking)
         {
             if (verified.Count > 0)
             {
-                // Prompt the user to confirm deletion
-                Console.Write("\n❓ Delete successfully copied files from iPhone? (Y/N): ");
-                var response = Console.ReadLine();
-                if (response?.Trim().ToUpper() == "Y")
+                bool delete;
+                if (deleteWithoutAsking)
+                {
+                    Console.WriteLine("\n🗑️ All files verified; deleting them from the device (--autodelete).");
+                    delete = true;
+                }
+                else
+                {
+                    // Prompt the user to confirm deletion
+                    Console.Write("\n❓ Delete successfully copied files from iPhone? (Y/N): ");
+                    var response = Console.ReadLine();
+                    delete = response?.Trim().ToUpper() == "Y";
+                }
+                if (delete)
                 {
                     Console.WriteLine("🗑️ Deleting files...");
                     foreach (var path in verified)

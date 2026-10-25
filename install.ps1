@@ -3,14 +3,21 @@
     Installs iPhoneVideoBackup and creates a scheduled task that launches it when an iPhone is connected.
 
 .DESCRIPTION
-    Copies the built executable and the start_iphone_copy.bat wrapper to Program Files and registers
-    a scheduled task, triggered by the Windows MTP driver event that is logged when a device is
-    connected over USB. The task runs the wrapper, which counts down for 10 seconds (any key cancels)
-    and then starts the backup without asking for confirmation.
+    Copies the built executable to Program Files and registers a scheduled task, triggered by the
+    Windows MTP driver event that is logged when a device is connected over USB. The task runs the
+    program with -y -wait, so it counts down (any key cancels) and then starts the backup without
+    asking for confirmation.
     Must be run from an elevated (Administrator) PowerShell prompt.
 
 .PARAMETER Dest
     Backup destination folder passed to the program. Prompted for if omitted.
+
+.PARAMETER Wait
+    Seconds the program counts down before starting the backup. Defaults to 10.
+
+.PARAMETER AutoDelete
+    Delete the originals from the phone without asking once every file has copied and verified.
+    Prompted for if omitted.
 
 .PARAMETER TaskName
     Name of the scheduled task to create.
@@ -23,6 +30,9 @@
 #>
 param(
     [string]$Dest,
+    [ValidateRange(0, 3600)]
+    [int]$Wait = 10,
+    [switch]$AutoDelete,
     [string]$TaskName = "backup iphone"
 )
 
@@ -30,7 +40,6 @@ $ErrorActionPreference = "Stop"
 
 $AppName    = "iPhoneVideoBackup"
 $ExeName    = "$AppName.exe"
-$WrapperName = "start_iphone_copy.bat"
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $EventLog   = "Microsoft-Windows-WPD-MTPClassDriver/Operational"
 
@@ -58,7 +67,7 @@ if ($existingTask) {
     if ($existingTask.State -eq "Running") {
         Write-Host "Stopping the running task..."
         Stop-ScheduledTask -TaskName $TaskName
-        # Stopping the task ends the wrapper, but the program it started may still be running
+        # Make sure the program itself has exited too, since it locks the installed files
         Get-Process -Name $AppName -ErrorAction SilentlyContinue | Stop-Process -Force
         Start-Sleep -Seconds 2
     }
@@ -96,6 +105,12 @@ $Dest = $Dest.TrimEnd('\')
 if ($Dest -match '^[A-Za-z]:$') {
     $Dest = "$Dest\"
 }
+# Ask whether originals should be deleted automatically, unless -AutoDelete was given
+if (-not $PSBoundParameters.ContainsKey("AutoDelete")) {
+    $answer = Read-Host "Automatically delete the originals from the phone once everything has copied and verified? (Y/N)"
+    $AutoDelete = $answer.Trim() -eq "Y"
+}
+
 $drive = $Dest.Substring(0, 3)
 if (-not (Test-Path $drive)) {
     Write-Host "Warning: drive $drive is not currently available. The backup will fail until it is connected."
@@ -105,8 +120,7 @@ if (-not (Test-Path $drive)) {
 Write-Host "Installing from $sourceDir to $InstallDir..."
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Get-ChildItem -Path $sourceDir -File | Copy-Item -Destination $InstallDir -Force
-Copy-Item -Path (Join-Path $PSScriptRoot $WrapperName) -Destination $InstallDir -Force
-$wrapperPath = Join-Path $InstallDir $WrapperName
+$exePath = Join-Path $InstallDir $ExeName
 
 # The task is triggered by an event in this log, so make sure the log is enabled
 $log = Get-WinEvent -ListLog $EventLog
@@ -116,17 +130,17 @@ if (-not $log.IsEnabled) {
     $log.SaveChanges()
 }
 
-# Build the task definition. The task runs the wrapper through cmd.exe; /y skips the program's
-# "commence copying?" prompt, since the wrapper's countdown already gives a chance to cancel.
+# Build the task definition. /y skips the "commence copying?" prompt, since the /wait
+# countdown already gives a chance to cancel.
 if ($Dest -match '\s') {
-    $programArguments = "/dest `"$Dest`" /device iphone /y"
+    $arguments = "/dest `"$Dest`" /device iphone /y /wait $Wait"
 } else {
-    $programArguments = "/dest $Dest /device iphone /y"
+    $arguments = "/dest $Dest /device iphone /y /wait $Wait"
 }
-# cmd /c strips the outer pair of quotes, leaving the quoted wrapper path and its arguments
-$command   = Join-Path $env:SystemRoot "System32\cmd.exe"
-$arguments = "/c `"`"$wrapperPath`" $programArguments`""
-$xmlCommand   = [Security.SecurityElement]::Escape($command)
+if ($AutoDelete) {
+    $arguments += " /autodelete"
+}
+$xmlCommand   = [Security.SecurityElement]::Escape($exePath)
 $xmlArguments = [Security.SecurityElement]::Escape($arguments)
 $xmlAuthor    = [Security.SecurityElement]::Escape($identity.Name)
 $userSid      = $identity.User.Value
@@ -187,5 +201,5 @@ Write-Host ""
 Write-Host "Installed."
 Write-Host "  Program: $InstallDir"
 Write-Host "  Task:    $TaskName"
-Write-Host "  Runs:    `"$wrapperPath`" $programArguments"
+Write-Host "  Runs:    `"$exePath`" $arguments"
 Write-Host "Connect an iPhone over USB to start a backup."

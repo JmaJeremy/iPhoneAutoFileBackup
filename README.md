@@ -28,22 +28,18 @@ dotnet run --project iPhoneVideoBackup.csproj -- --dest C:\Backup --device iphon
 - `--dest` — absolute path of the backup folder. Files are copied into a subfolder named after today's date (`yyyy-MM-dd`).
 - `--device` — `iphone` or `pixel`.
 - `-y` / `--yes` — start copying without asking, as long as there is enough free space.
+- `--wait <seconds>` — count down before starting; press any key during the countdown to cancel. Combined with `-y`, the backup starts automatically when the countdown ends.
+- `--autodelete` — delete the originals from the phone without asking, but only if every file copied and verified successfully. If anything failed, you are asked as usual.
 - `--retry-delay <seconds>` — how long to wait before reconnecting if the phone is disconnected or the transfer is interrupted (default 10). The program reconnects and resumes, skipping files already copied, and gives up after 3 attempts in a row that make no progress.
 - `--help` — show usage.
 
-If `--dest` or `--device` is left out, the program asks for it.
+If `--dest` or `--device` is left out, the program asks for it. Options can be written with `-`, `--` or `/` (e.g. `-wait 10`, `--wait 10`, `/wait 10`). For example, to count down 10 seconds and then back up and clear the phone unattended:
+
+```
+iPhoneVideoBackup.exe -dest D:\Backup\iphone -device iphone -y -wait 10 -autodelete
+```
 
 While copying, each file shows the elapsed time, the estimated time remaining and the estimated finish time (local time), based on the overall average transfer speed. When copying is done, the program prints the start time, end time and total time before asking whether to delete the originals.
-
-### Countdown wrapper
-
-[start_iphone_copy.bat](start_iphone_copy.bat) counts down for 10 seconds (press any key to cancel) and then runs the program, passing along any arguments it was given:
-
-```
-start_iphone_copy.bat /dest D:\Backup\iphone /device iphone /y
-```
-
-It uses the `iPhoneVideoBackup.exe` in its own folder, or else a release build under `bin\Release\net48`.
 
 ## Publishing
 
@@ -57,7 +53,7 @@ The output is written to `bin\Release\net48\publish\`.
 
 ## Installing (auto-launch when an iPhone is connected)
 
-[install.ps1](install.ps1) copies the program and the [countdown wrapper](#countdown-wrapper) to `C:\Program Files\iPhoneVideoBackup` and creates a scheduled task that runs the wrapper whenever an iPhone is plugged in. Run it from an elevated (Run as administrator) PowerShell prompt in the repository root:
+[install.ps1](install.ps1) copies the program to `C:\Program Files\iPhoneVideoBackup` and creates a scheduled task that runs it whenever an iPhone is plugged in. Run it from an elevated (Run as administrator) PowerShell prompt in the repository root:
 
 ```
 powershell -ExecutionPolicy Bypass -File install.ps1
@@ -68,9 +64,10 @@ The script:
 1. Checks whether the scheduled task (`backup iphone`) already exists, and asks before replacing it.
 2. Builds a fresh release (or uses the existing release build if the `dotnet` CLI is not installed).
 3. Asks for the folder to back up to (or pass it with `-Dest D:\Backup\iphone`).
-4. Copies the program and wrapper to Program Files and registers the task for the current user.
+4. Asks whether to delete the originals from the phone automatically after a fully verified copy (or pass `-AutoDelete`).
+5. Copies the program to Program Files and registers the task for the current user.
 
-The task runs the wrapper with `/dest <your folder> /device iphone /y`, so after the 10-second countdown the backup starts without asking for confirmation (it still asks if there isn't enough free space).
+The task runs the program with `/dest <your folder> /device iphone /y /wait 10` (plus `/autodelete` if you chose it), so after a 10-second countdown the backup starts without asking for confirmation. It still asks if there isn't enough free space. Use `-Wait <seconds>` to change the countdown.
 
 The task is triggered by the Windows MTP driver's "device connected" event, so it also fires when other MTP devices (such as an Android phone) are connected; the program exits if no iPhone is found.
 
