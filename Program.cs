@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using MediaDevices;
 
@@ -49,6 +50,9 @@ namespace iPhoneVideoBackup
                 System.Threading.Thread.Sleep(3000); // Leave the message up long enough to read
                 return;
             }
+
+            // Keep Windows from going to sleep while the backup runs (the display may still turn off)
+            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
 
             try
             {
@@ -329,6 +333,9 @@ namespace iPhoneVideoBackup
                 Console.WriteLine($"   Total time: {FormatDuration(endTime - progress.StartTime)}");
                 Console.WriteLine($"   Copied: {progress.BytesCopied / (1024.0 * 1024.0 * 1024.0):F2} GB at an average of {progress.AverageSpeed / (1024.0 * 1024.0):F2} MB/s");
 
+                // 2 beeps: everything copied and verified. 10 beeps: retries ran out with files still missing.
+                Beep(failed.Count == 0 ? 2 : 10);
+
                 if (device != null)
                 {
                     // Handle deletion of successfully copied files based on user input
@@ -350,9 +357,133 @@ namespace iPhoneVideoBackup
             }
             finally
             {
+                // Allow sleep again, so a window left open at the prompt below doesn't keep the PC awake
+                SetThreadExecutionState(ES_CONTINUOUS);
+
                 // Wait for the user to press Enter before closing the program
                 Console.WriteLine("\nPress Enter to exit...");
                 Console.ReadLine();
+            }
+        }
+
+        // Sleep prevention (kernel32 SetThreadExecutionState)
+        private const uint ES_CONTINUOUS = 0x80000000;
+        private const uint ES_SYSTEM_REQUIRED = 0x00000001;
+
+        [DllImport("kernel32.dll")]
+        private static extern uint SetThreadExecutionState(uint esFlags);
+
+        // Status beeps
+        private const int BeepFrequencyHz = 1000;
+        private const int BeepDurationMs = 200;
+        private const int BeepGapMs = 150;
+
+        // Plays the given number of beeps on the default sound card and, if the InpOut driver is
+        // available, on the built-in PC speaker at the same time
+        static void Beep(int count)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                bool speakerOn = PcSpeaker.Start(BeepFrequencyHz);
+                try
+                {
+                    // Console.Beep is routed to the default audio device on modern Windows, and blocks for the duration
+                    Console.Beep(BeepFrequencyHz, BeepDurationMs);
+                }
+                catch
+                {
+                    System.Threading.Thread.Sleep(BeepDurationMs);
+                }
+                if (speakerOn)
+                {
+                    PcSpeaker.Stop();
+                }
+                System.Threading.Thread.Sleep(BeepGapMs);
+            }
+        }
+
+        // Drives the motherboard PC speaker through the programmable interval timer, using port I/O
+        // from the InpOut driver (inpoutx64.dll for a 64-bit process, inpout32.dll for 32-bit). If the
+        // DLL or driver isn't available, the speaker is skipped and only the sound card beeps.
+        static class PcSpeaker
+        {
+            private const short TimerControlPort = 0x43;
+            private const short TimerChannel2Port = 0x42;
+            private const short SpeakerControlPort = 0x61;
+            private const int TimerBaseFrequencyHz = 1193180;
+
+            private static bool? available;
+
+            [DllImport("inpoutx64.dll", EntryPoint = "Out32")] private static extern void Out64(short port, short data);
+            [DllImport("inpoutx64.dll", EntryPoint = "Inp32")] private static extern short Inp64(short port);
+            [DllImport("inpoutx64.dll", EntryPoint = "IsInpOutDriverOpen")] private static extern int IsOpen64();
+            [DllImport("inpout32.dll", EntryPoint = "Out32")] private static extern void Out32(short port, short data);
+            [DllImport("inpout32.dll", EntryPoint = "Inp32")] private static extern short Inp32(short port);
+            [DllImport("inpout32.dll", EntryPoint = "IsInpOutDriverOpen")] private static extern int IsOpen32();
+
+            private static void Out(short port, short data)
+            {
+                if (Environment.Is64BitProcess) Out64(port, data); else Out32(port, data);
+            }
+
+            private static short Inp(short port)
+            {
+                return Environment.Is64BitProcess ? Inp64(port) : Inp32(port);
+            }
+
+            // Checked once; loading the DLL also installs/starts the driver (needs admin the first time)
+            private static bool IsAvailable()
+            {
+                if (available == null)
+                {
+                    try
+                    {
+                        available = (Environment.Is64BitProcess ? IsOpen64() : IsOpen32()) != 0;
+                    }
+                    catch (Exception ex) when (ex is DllNotFoundException || ex is EntryPointNotFoundException || ex is BadImageFormatException)
+                    {
+                        available = false;
+                    }
+                    if (available == false)
+                    {
+                        Console.WriteLine("ℹ️ PC speaker unavailable (InpOut driver not found or not running); beeping on the sound card only.");
+                    }
+                }
+                return available.Value;
+            }
+
+            // Starts a tone; returns false if the speaker couldn't be used
+            public static bool Start(int frequencyHz)
+            {
+                if (!IsAvailable())
+                {
+                    return false;
+                }
+                try
+                {
+                    int divisor = TimerBaseFrequencyHz / frequencyHz;
+                    Out(TimerControlPort, 0xB6); // Channel 2, low then high byte, square wave
+                    Out(TimerChannel2Port, (short)(divisor & 0xFF));
+                    Out(TimerChannel2Port, (short)((divisor >> 8) & 0xFF));
+                    Out(SpeakerControlPort, (short)(Inp(SpeakerControlPort) | 0x03)); // Connect the timer to the speaker
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            public static void Stop()
+            {
+                try
+                {
+                    Out(SpeakerControlPort, (short)(Inp(SpeakerControlPort) & 0xFC));
+                }
+                catch
+                {
+                    // Nothing more we can do; the speaker will be silenced when the driver is unloaded
+                }
             }
         }
 
@@ -700,6 +831,7 @@ namespace iPhoneVideoBackup
                         Console.WriteLine($"Deleted: {Path.GetFileName(path)}");
                         Console.Out.Flush();
                     }
+                    Beep(3);
                 }
                 else
                 {

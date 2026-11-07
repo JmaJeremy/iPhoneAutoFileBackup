@@ -12,4 +12,10 @@
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 
+  <!-- Optional InpOut DLLs for PC speaker beeps: copied to the output when placed next to this file -->
+  <ItemGroup>
+    <None Include="inpoutx64.dll" Condition="Exists('inpoutx64.dll')" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="inpout32.dll" Condition="Exists('inpout32.dll')" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
